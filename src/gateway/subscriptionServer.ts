@@ -7,7 +7,6 @@ import { firebaseAuth } from './auth';
 import { topicManager } from './topicManager';
 import { logger } from '../utils/logger';
 import { AuthContext } from '../types';
-import { v4 as uuidv4 } from 'uuid';
 
 export class SubscriptionServer {
   private wss: WebSocketServer;

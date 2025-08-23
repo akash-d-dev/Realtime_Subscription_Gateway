@@ -1,8 +1,10 @@
 import { RedisClientType } from 'redis';
-import { Event } from '../types';
+import { EventEnvelope as Event } from '../types';
 import { logger } from '../utils/logger';
 import { redisConnection } from './connection';
 import { redisTopicManager } from './topicManager';
+import { config } from '../config';
+import { graphqlPubSub, channelForTopic } from '../graphql/pubsub';
 
 export class EventDistributor {
   private redis: RedisClientType;
@@ -21,10 +23,10 @@ export class EventDistributor {
       await this.subscriber.connect();
       
       // Subscribe to all topic events
-      await this.subscriber.pSubscribe('topic:*:events', async (message, channel) => {
+      await this.subscriber.pSubscribe(`${config.redis.keyPrefix}:pub:*`, async (message, channel) => {
         try {
           const event: Event = JSON.parse(message);
-          const topicId = channel.replace('topic:', '').replace(':events', '');
+          const topicId = channel.replace(`${config.redis.keyPrefix}:pub:`, '');
           
           await this.distributeEventToSubscribers(topicId, event);
         } catch (error) {
@@ -44,7 +46,7 @@ export class EventDistributor {
     if (!this.isListening) return;
 
     try {
-      await this.subscriber.pUnsubscribe('topic:*:events');
+      await this.subscriber.pUnsubscribe(`${config.redis.keyPrefix}:pub:*`);
       await this.subscriber.disconnect();
       this.isListening = false;
       logger.info('Event distributor stopped listening');
@@ -75,6 +77,14 @@ export class EventDistributor {
       });
 
       await Promise.allSettled(distributionPromises);
+      // Emit to GraphQL PubSub channel scoped by tenant and topic
+      try {
+        await graphqlPubSub.publish(channelForTopic(event.tenantId, topicId), {
+          topicEvents: event,
+        });
+      } catch (err) {
+        logger.error('GraphQL PubSub publish failed:', err);
+      }
       logger.debug(`Distributed event ${event.id} to ${subscriberIds.length} subscribers in topic ${topicId}`);
     } catch (error) {
       logger.error(`Error distributing event to subscribers for topic ${topicId}:`, error);

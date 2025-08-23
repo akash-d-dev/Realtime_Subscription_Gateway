@@ -13,6 +13,7 @@ export interface Config {
     host: string;
     port: number;
     password: string;
+    keyPrefix: string;
   };
   firebase: {
     projectId: string;
@@ -31,6 +32,9 @@ export interface Config {
   logging: {
     level: string;
   };
+  featureFlags: {
+    durabilityEnabled: boolean;
+  };
 }
 
 export const config: Config = {
@@ -43,6 +47,7 @@ export const config: Config = {
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT || '6379', 10),
     password: process.env.REDIS_PASSWORD || '',
+    keyPrefix: process.env.REDIS_KEY_PREFIX || 'rt',
   },
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID || '',
@@ -60,5 +65,8 @@ export const config: Config = {
   },
   logging: {
     level: process.env.LOG_LEVEL || 'info',
+  },
+  featureFlags: {
+    durabilityEnabled: (process.env.DURABILITY_ENABLED || 'false').toLowerCase() === 'true',
   },
 }; 

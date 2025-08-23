@@ -1,6 +1,7 @@
 import { RedisClientType } from 'redis';
 import { logger } from '../utils/logger';
 import { redisConnection } from './connection';
+import { config } from '../config';
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -98,8 +99,8 @@ export class RateLimiter {
     return this.checkRateLimit(key, 100, 60000); // 100 requests per minute per user per action
   }
 
-  async checkTopicRateLimit(topicId: string): Promise<RateLimitResult> {
-    const key = `rate_limit:topic:${topicId}`;
+  async checkTopicRateLimit(tenantId: string, topicId: string): Promise<RateLimitResult> {
+    const key = `${config.redis.keyPrefix}:rl:${tenantId}:${topicId}`;
     return this.checkRateLimit(key, 1000, 60000); // 1000 events per minute per topic
   }
 

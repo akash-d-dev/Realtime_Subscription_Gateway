@@ -32,7 +32,8 @@ class FirebaseAuth {
       return {
         userId: decodedToken.uid,
         email: decodedToken.email || '',
-        permissions: decodedToken.permissions || [],
+        permissions: (decodedToken as any).permissions || [],
+        tenantId: (decodedToken as any).tenantId || 'default',
       };
     } catch (error) {
       logger.error('Token verification failed:', error);
@@ -47,7 +48,8 @@ class FirebaseAuth {
       return {
         userId: decodedClaims.uid,
         email: decodedClaims.email || '',
-        permissions: decodedClaims.permissions || [],
+        permissions: (decodedClaims as any).permissions || [],
+        tenantId: (decodedClaims as any).tenantId || 'default',
       };
     } catch (error) {
       logger.error('Session cookie verification failed:', error);

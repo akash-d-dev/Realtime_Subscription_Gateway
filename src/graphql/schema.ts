@@ -1,13 +1,16 @@
 import { gql } from 'apollo-server-express';
 
 export const typeDefs = gql`
-  type Event {
+  type EventEnvelope {
     id: ID!
     topicId: ID!
     type: String!
     data: JSON!
-    timestamp: Float!
-    userId: String
+    seq: Int!
+    ts: String!
+    tenantId: String!
+    senderId: String!
+    priority: Int
   }
 
   type Topic {
@@ -37,12 +40,13 @@ export const typeDefs = gql`
     topicId: ID!
     type: String!
     data: JSON!
+    priority: Int
   }
 
   type Query {
     topics: [Topic!]!
     topicStats(topicId: ID!): TopicStats
-    eventHistory(topicId: ID!, count: Int): [Event!]!
+    eventHistory(topicId: ID!, count: Int): [EventEnvelope!]!
   }
 
   type Mutation {
@@ -50,7 +54,7 @@ export const typeDefs = gql`
   }
 
   type Subscription {
-    topicEvents(topicId: ID!): Event!
+    topicEvents(topicId: ID!): EventEnvelope!
   }
 
   scalar JSON

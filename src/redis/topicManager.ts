@@ -1,5 +1,5 @@
 import { RedisClientType } from 'redis';
-import { Event, Topic, Subscriber, StoredEventData } from '../types';
+import { EventEnvelope as Event, Topic, Subscriber, StoredEventData } from '../types';
 import { logger } from '../utils/logger';
 import { config } from '../config';
 import { redisConnection } from './connection';
@@ -59,23 +59,32 @@ export class RedisTopicManager {
   }
 
   async addEvent(topicId: string, event: Event): Promise<void> {
+    // Assign sequence (monotonic per topic)
+    const seqKey = `${config.redis.keyPrefix}:seq:${topicId}`;
+    const newSeq = await this.redis.incr(seqKey);
+    event.seq = newSeq;
+    if (!event.ts) {
+      event.ts = new Date().toISOString();
+    }
+
     // Add event to Redis Stream for persistence and replay
-    const streamKey = `topic:${topicId}:stream`;
+    const streamKey = `${config.redis.keyPrefix}:stream:${topicId}`;
     const eventData = {
       id: event.id,
       type: event.type,
       data: JSON.stringify(event.data),
-      timestamp: event.timestamp.toString(),
-      userId: event.userId || '',
+      seq: event.seq.toString(),
+      ts: event.ts,
+      userId: event.senderId || '',
     };
 
     const streamId = await this.redis.xAdd(streamKey, '*', eventData);
     
     // Update last event ID in topic metadata
-    await this.redis.hSet(`topic:${topicId}:meta`, 'lastEventId', event.timestamp.toString());
+    await this.redis.hSet(`${config.redis.keyPrefix}:topic:${topicId}:meta`, 'lastEventId', event.seq.toString());
 
     // Publish event to Redis Pub/Sub for real-time distribution
-    await this.redis.publish(`topic:${topicId}:events`, JSON.stringify(event));
+    await this.redis.publish(`${config.redis.keyPrefix}:pub:${topicId}`, JSON.stringify(event));
 
     // Maintain stream size (keep last 1000 events)
     await this.redis.xTrim(streamKey, 'MAXLEN', 1000);
@@ -85,7 +94,7 @@ export class RedisTopicManager {
   }
 
   async getSubscriberEvents(topicId: string, subscriberId: string): Promise<Event[]> {
-    const queueKey = `subscriber:${subscriberId}:topic:${topicId}:queue`;
+    const queueKey = `${config.redis.keyPrefix}:sub:${subscriberId}:topic:${topicId}:queue`;
     
     // Get all events from subscriber's queue
     const events = await this.redis.lRange(queueKey, 0, -1);
@@ -94,7 +103,7 @@ export class RedisTopicManager {
     await this.redis.del(queueKey);
     
     // Update last seen timestamp
-    await this.redis.hSet(`subscriber:${subscriberId}:meta`, 'lastSeen', Date.now().toString());
+    await this.redis.hSet(`${config.redis.keyPrefix}:subscriber:${subscriberId}:meta`, 'lastSeen', Date.now().toString());
     
     return events.map((eventStr: string) => JSON.parse(eventStr));
   }
@@ -110,7 +119,7 @@ export class RedisTopicManager {
     };
 
     // Store subscriber metadata
-    await this.redis.hSet(`subscriber:${subscriberId}:meta`, {
+    await this.redis.hSet(`${config.redis.keyPrefix}:subscriber:${subscriberId}:meta`, {
       id: subscriberId,
       topicId,
       userId: userId || '',
@@ -119,10 +128,10 @@ export class RedisTopicManager {
     });
 
     // Add subscriber to topic's subscriber set
-    await this.redis.sAdd(`topic:${topicId}:subscribers`, subscriberId);
+    await this.redis.sAdd(`${config.redis.keyPrefix}:topic:${topicId}:subscribers`, subscriberId);
 
     // Set expiration for subscriber metadata (1 hour)
-    await this.redis.expire(`subscriber:${subscriberId}:meta`, 3600);
+    await this.redis.expire(`${config.redis.keyPrefix}:subscriber:${subscriberId}:meta`, 3600);
 
     logger.info(`Added subscriber ${subscriberId} to topic ${topicId}`);
     return subscriber;
@@ -130,12 +139,12 @@ export class RedisTopicManager {
 
   async removeSubscriber(topicId: string, subscriberId: string): Promise<boolean> {
     // Remove from topic's subscriber set
-    const removed = await this.redis.sRem(`topic:${topicId}:subscribers`, subscriberId);
+    const removed = await this.redis.sRem(`${config.redis.keyPrefix}:topic:${topicId}:subscribers`, subscriberId);
     
     if (removed) {
       // Clean up subscriber data
-      await this.redis.del(`subscriber:${subscriberId}:topic:${topicId}:queue`);
-      await this.redis.del(`subscriber:${subscriberId}:meta`);
+      await this.redis.del(`${config.redis.keyPrefix}:sub:${subscriberId}:topic:${topicId}:queue`);
+      await this.redis.del(`${config.redis.keyPrefix}:subscriber:${subscriberId}:meta`);
       logger.info(`Removed subscriber ${subscriberId} from topic ${topicId}`);
     }
     
@@ -143,10 +152,10 @@ export class RedisTopicManager {
   }
 
   async getSubscriber(topicId: string, subscriberId: string): Promise<Subscriber | null> {
-    const exists = await this.redis.exists(`subscriber:${subscriberId}:meta`);
+    const exists = await this.redis.exists(`${config.redis.keyPrefix}:subscriber:${subscriberId}:meta`);
     if (!exists) return null;
 
-    const meta = await this.redis.hGetAll(`subscriber:${subscriberId}:meta`);
+    const meta = await this.redis.hGetAll(`${config.redis.keyPrefix}:subscriber:${subscriberId}:meta`);
     
     return {
       id: subscriberId,
@@ -159,7 +168,7 @@ export class RedisTopicManager {
   }
 
   async markSubscriberInactive(topicId: string, subscriberId: string): Promise<void> {
-    await this.redis.hSet(`subscriber:${subscriberId}:meta`, 'isActive', 'false');
+    await this.redis.hSet(`${config.redis.keyPrefix}:subscriber:${subscriberId}:meta`, 'isActive', 'false');
     logger.debug(`Marked subscriber ${subscriberId} as inactive`);
   }
 
@@ -168,11 +177,11 @@ export class RedisTopicManager {
     const threshold = config.topic.slowClientThresholdMs;
 
     // Get all topics
-    const topicKeys = await this.redis.keys('topic:*:meta');
+    const topicKeys = await this.redis.keys(`${config.redis.keyPrefix}:topic:*:meta`);
     
     for (const topicKey of topicKeys) {
-      const topicId = topicKey.replace('topic:', '').replace(':meta', '');
-      const subscriberIds = await this.redis.sMembers(`topic:${topicId}:subscribers`);
+      const topicId = topicKey.replace(`${config.redis.keyPrefix}:topic:`, '').replace(':meta', '');
+      const subscriberIds = await this.redis.sMembers(`${config.redis.keyPrefix}:topic:${topicId}:subscribers`);
       
       for (const subscriberId of subscriberIds) {
         const subscriber = await this.getSubscriber(topicId, subscriberId);
@@ -185,11 +194,11 @@ export class RedisTopicManager {
   }
 
   async getTopicStats(topicId: string): Promise<{ subscriberCount: number; bufferSize: number } | null> {
-    const exists = await this.redis.exists(`topic:${topicId}:meta`);
+    const exists = await this.redis.exists(`${config.redis.keyPrefix}:topic:${topicId}:meta`);
     if (!exists) return null;
 
-    const subscriberCount = await this.redis.sCard(`topic:${topicId}:subscribers`);
-    const bufferSize = await this.redis.xLen(`topic:${topicId}:stream`);
+    const subscriberCount = await this.redis.sCard(`${config.redis.keyPrefix}:topic:${topicId}:subscribers`);
+    const bufferSize = await this.redis.xLen(`${config.redis.keyPrefix}:stream:${topicId}`);
 
     return {
       subscriberCount,
@@ -198,12 +207,12 @@ export class RedisTopicManager {
   }
 
   async getAllTopics(): Promise<string[]> {
-    const topicKeys = await this.redis.keys('topic:*:meta');
-    return topicKeys.map(key => key.replace('topic:', '').replace(':meta', ''));
+    const topicKeys = await this.redis.keys(`${config.redis.keyPrefix}:topic:*:meta`);
+    return topicKeys.map(key => key.replace(`${config.redis.keyPrefix}:topic:`, '').replace(':meta', ''));
   }
 
   async addEventToSubscriberQueue(topicId: string, subscriberId: string, event: Event): Promise<void> {
-    const queueKey = `subscriber:${subscriberId}:topic:${topicId}:queue`;
+    const queueKey = `${config.redis.keyPrefix}:sub:${subscriberId}:topic:${topicId}:queue`;
     const maxSize = config.topic.maxSubscriberQueueSize;
 
     // Add event to queue
@@ -222,7 +231,7 @@ export class RedisTopicManager {
   }
 
   async getEventHistory(topicId: string, count: number = 100): Promise<Event[]> {
-    const streamKey = `topic:${topicId}:stream`;
+    const streamKey = `${config.redis.keyPrefix}:stream:${topicId}`;
     const events = await this.redis.xRevRange(streamKey, '+', '-', { COUNT: count });
     
     return events.map((event) => {
@@ -233,8 +242,10 @@ export class RedisTopicManager {
         topicId,
         type: eventData.type,
         data: JSON.parse(eventData.data),
-        timestamp: parseInt(eventData.timestamp),
-        ...(eventData.userId ? { userId: eventData.userId } : {}),
+        seq: parseInt(eventData.seq),
+        ts: eventData.ts,
+        tenantId: 'default',
+        senderId: eventData.userId,
       };
     }).reverse();
   }

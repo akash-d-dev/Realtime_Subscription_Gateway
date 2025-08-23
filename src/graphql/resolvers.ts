@@ -1,14 +1,14 @@
-import { Event, PublishEventInput } from '../types';
+import { EventEnvelope as Event, PublishEventInput } from '../types';
 import { redisTopicManager } from '../redis/topicManager';
 import { eventDistributor } from '../redis/eventDistributor';
 import { rateLimiter } from '../redis/rateLimiter';
 import { firebaseAuth } from '../gateway/auth';
 import { logger } from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
-import { PubSub } from 'graphql-subscriptions';
+import { graphqlPubSub, channelForTopic } from './pubsub';
+import { config } from '../config';
 
-// Create a PubSub instance for managing subscriptions
-const pubsub = new PubSub();
+// PubSub is provided via singleton in ./pubsub
 
 export const resolvers = {
   JSON: {
@@ -26,6 +26,9 @@ export const resolvers = {
       return ast.value;
     },
   },
+  EventEnvelope: {
+    // pass-through resolvers if needed later
+  },
   
   Query: {
     topics: async (_: any, __: any, context: any): Promise<any> => {
@@ -38,7 +41,7 @@ export const resolvers = {
               id,
               subscriberCount: stats?.subscriberCount || 0,
               bufferSize: stats?.bufferSize || 0,
-              createdAt: Date.now(), // TODO: Get actual creation time from Redis
+              createdAt: Date.now(),
             };
           })
         );
@@ -91,7 +94,7 @@ export const resolvers = {
           throw new Error('Authentication required');
         }
 
-        const { topicId, type, data } = input;
+        const { topicId, type, data, priority } = input;
 
         // Check rate limits
         const userRateLimit = await rateLimiter.checkUserRateLimit(context.user.userId, 'publish');
@@ -99,7 +102,8 @@ export const resolvers = {
           throw new Error(`Rate limit exceeded. Try again in ${Math.ceil((userRateLimit.resetTime - Date.now()) / 1000)} seconds`);
         }
 
-        const topicRateLimit = await rateLimiter.checkTopicRateLimit(topicId);
+        const tenantForRl = context.user.tenantId || 'default';
+        const topicRateLimit = await rateLimiter.checkTopicRateLimit(tenantForRl, topicId);
         if (!topicRateLimit.allowed) {
           throw new Error(`Topic rate limit exceeded. Try again in ${Math.ceil((topicRateLimit.resetTime - Date.now()) / 1000)} seconds`);
         }
@@ -111,22 +115,26 @@ export const resolvers = {
         }
 
         // Create event
+        const now = new Date();
+        const tenantId = context.user.tenantId || 'default';
+        // Seq is assigned inside Redis manager for durability; for transient path we can use timestamp as fallback
         const event: Event = {
           id: uuidv4(),
           topicId,
           type,
           data,
-          timestamp: Date.now(),
-          userId: context.user.userId,
+          seq: Date.now(),
+          ts: now.toISOString(),
+          tenantId,
+          senderId: context.user.userId,
+          ...(typeof priority === 'number' ? { priority } : {}),
         };
 
         // Publish event using the event distributor
         await eventDistributor.publishEvent(topicId, event);
 
-        // Publish to PubSub for immediate GraphQL subscription delivery
-        await pubsub.publish('TOPIC_EVENTS', {
-          topicEvents: event,
-        });
+        // Also emit to PubSub for same-node delivery
+        await graphqlPubSub.publish(channelForTopic(tenantId, topicId), { topicEvents: event });
 
         logger.info(`Published event ${event.id} to topic ${topicId}`);
 
@@ -167,8 +175,9 @@ export const resolvers = {
 
           logger.info(`Subscriber ${subscriberId} subscribed to topic ${topicId}`);
 
-          // Return async iterator for real-time events
-          return pubsub.asyncIterator(['TOPIC_EVENTS']);
+          // Return async iterator for topic-scoped events
+          const tenantId = context.user.tenantId || 'default';
+          return graphqlPubSub.asyncIterator([channelForTopic(tenantId, topicId)]);
         } catch (error) {
           logger.error('Error subscribing to topic:', error);
           throw new Error('Failed to subscribe to topic');
