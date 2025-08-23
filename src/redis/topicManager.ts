@@ -1,5 +1,5 @@
 import { RedisClientType } from 'redis';
-import { Event, Topic, Subscriber } from '../types';
+import { Event, Topic, Subscriber, StoredEventData } from '../types';
 import { logger } from '../utils/logger';
 import { config } from '../config';
 import { redisConnection } from './connection';
@@ -78,8 +78,9 @@ export class RedisTopicManager {
     await this.redis.publish(`topic:${topicId}:events`, JSON.stringify(event));
 
     // Maintain stream size (keep last 1000 events)
-    await this.redis.xTrim(streamKey, 'MAXLEN', '~', 1000);
-
+    await this.redis.xTrim(streamKey, 'MAXLEN', 1000);
+    // await this.redis.xTrim(streamKey, 'MAXLEN', '~', 1000);
+    
     logger.debug(`Added event ${event.id} to topic ${topicId} with stream ID ${streamId}`);
   }
 
@@ -225,10 +226,7 @@ export class RedisTopicManager {
     const events = await this.redis.xRevRange(streamKey, '+', '-', { COUNT: count });
     
     return events.map((event) => {
-      const eventData: any = {};
-      for (let i = 0; i < event.message.length; i += 2) {
-        eventData[event.message[i]] = event.message[i + 1];
-      }
+      const eventData = event.message as unknown as StoredEventData;
       
       return {
         id: eventData.id,
@@ -236,7 +234,7 @@ export class RedisTopicManager {
         type: eventData.type,
         data: JSON.parse(eventData.data),
         timestamp: parseInt(eventData.timestamp),
-        userId: eventData.userId || undefined,
+        ...(eventData.userId ? { userId: eventData.userId } : {}),
       };
     }).reverse();
   }

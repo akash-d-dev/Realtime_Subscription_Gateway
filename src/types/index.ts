@@ -46,4 +46,12 @@ export interface SubscriptionContext {
   topicId: string;
   userId?: string;
   connectionId: string;
+}
+
+export interface StoredEventData {
+  id: string;
+  type: string;
+  data: string;
+  timestamp: string;
+  userId: string;
 } 
