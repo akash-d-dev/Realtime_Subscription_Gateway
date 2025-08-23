@@ -87,11 +87,11 @@ async function startServer(): Promise<void> {
     apolloServer.applyMiddleware({ app: app as any, path: '/graphql' });
 
     // WebSocket subscription server
-    const subscriptionServer = new SubscriptionServer(httpServer);
+    new SubscriptionServer(httpServer);
 
     // Cleanup interval for inactive subscribers
-    setInterval(async () => {
-      await redisTopicManager.cleanupInactiveSubscribers();
+    setInterval(() => {
+      void redisTopicManager.cleanupInactiveSubscribers();
     }, 30000); // Every 30 seconds
 
     // Start server
@@ -104,24 +104,28 @@ async function startServer(): Promise<void> {
     });
 
     // Graceful shutdown
-    process.on('SIGTERM', async () => {
+    process.on('SIGTERM', () => {
       logger.info('SIGTERM received, shutting down gracefully');
-      await eventDistributor.stopListening();
-      await redisConnection.disconnect();
-      httpServer.close(() => {
-        logger.info('Server closed');
-        process.exit(0);
-      });
+      void (async () => {
+        await eventDistributor.stopListening();
+        await redisConnection.disconnect();
+        httpServer.close(() => {
+          logger.info('Server closed');
+          process.exit(0);
+        });
+      })();
     });
 
-    process.on('SIGINT', async () => {
+    process.on('SIGINT', () => {
       logger.info('SIGINT received, shutting down gracefully');
-      await eventDistributor.stopListening();
-      await redisConnection.disconnect();
-      httpServer.close(() => {
-        logger.info('Server closed');
-        process.exit(0);
-      });
+      void (async () => {
+        await eventDistributor.stopListening();
+        await redisConnection.disconnect();
+        httpServer.close(() => {
+          logger.info('Server closed');
+          process.exit(0);
+        });
+      })();
     });
 
   } catch (error) {

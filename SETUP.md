@@ -164,3 +164,9 @@ For production deployment, consider:
 - **Issues**: Create an issue on GitHub
 - **Documentation**: Check the main README.md
 - **Examples**: See the `/examples` folder 
+
+
+How to demo
+Start server: npm run dev
+Subscriber first (replay): npm run demo:sub -- --topic doc:123 --from 1 --token "<JWT>"
+Publisher: npm run demo:pub -- --topic doc:123 --rate 100 --type metric --duration 10 --token "<JWT>"

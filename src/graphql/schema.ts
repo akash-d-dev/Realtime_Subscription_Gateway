@@ -36,6 +36,10 @@ export const typeDefs = gql`
     message: String
   }
 
+  type PresenceList {
+    users: [String!]!
+  }
+
   input PublishEventInput {
     topicId: ID!
     type: String!
@@ -51,10 +55,13 @@ export const typeDefs = gql`
 
   type Mutation {
     publishEvent(input: PublishEventInput!): PublishEventResponse!
+    joinTopic(topicId: ID!): SubscriptionResponse!
+    leaveTopic(topicId: ID!): SubscriptionResponse!
+    heartbeat(topicId: ID!): SubscriptionResponse!
   }
 
   type Subscription {
-    topicEvents(topicId: ID!): EventEnvelope!
+    topicEvents(topicId: ID!, fromSeq: Int): EventEnvelope!
   }
 
   scalar JSON

@@ -6,13 +6,12 @@ import { resolvers } from '../graphql/resolvers';
 import { firebaseAuth } from './auth';
 import { topicManager } from './topicManager';
 import { logger } from '../utils/logger';
-import { AuthContext } from '../types';
 
 export class SubscriptionServer {
   private wss: WebSocketServer;
   private connectionMap = new Map<string, string>(); // connectionId -> userId
 
-  constructor(server: any) {
+  constructor(server: import('http').Server) {
     this.wss = new WebSocketServer({
       server,
       path: '/graphql',
@@ -33,7 +32,7 @@ export class SubscriptionServer {
         schema,
         context: async (ctx) => {
           // Extract token from connection parameters
-          const authHeader = ctx.connectionParams?.authorization;
+          const authHeader = (ctx as any).connectionParams?.authorization as string | undefined;
           const token = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : null;
           
           if (!token) {
@@ -48,7 +47,7 @@ export class SubscriptionServer {
 
           return {
             user: authContext,
-          };
+          } as { user: { userId: string; tenantId: string } };
         },
         onConnect: async () => {
           logger.info('WebSocket connection established');

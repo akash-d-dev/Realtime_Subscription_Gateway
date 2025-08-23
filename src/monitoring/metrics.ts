@@ -53,6 +53,11 @@ export class MetricsCollector {
     this.metrics.events.dropped++;
   }
 
+  // Convenience wrappers for counters in hot paths
+  onPublish(): void { this.incrementEventPublished(); }
+  onDeliver(): void { this.incrementEventDelivered(); }
+  onDrop(): void { this.incrementEventDropped(); }
+
   recordEventLatency(latencyMs: number): void {
     this.eventLatencies.push(latencyMs);
     // Keep only last 1000 latencies for average calculation

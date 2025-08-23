@@ -35,6 +35,9 @@ export interface Config {
   featureFlags: {
     durabilityEnabled: boolean;
   };
+  limits: {
+    maxPayloadBytes: number;
+  };
 }
 
 export const config: Config = {
@@ -68,5 +71,8 @@ export const config: Config = {
   },
   featureFlags: {
     durabilityEnabled: (process.env.DURABILITY_ENABLED || 'false').toLowerCase() === 'true',
+  },
+  limits: {
+    maxPayloadBytes: parseInt(process.env.MAX_PAYLOAD_BYTES || '65536', 10), // 64KB default
   },
 }; 
