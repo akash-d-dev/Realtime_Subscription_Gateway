@@ -1,13 +1,16 @@
 import { RedisClientType } from 'redis';
-import { Event } from '../types';
+import { EventEnvelope as Event } from '../types';
 import { logger } from '../utils/logger';
 import { redisConnection } from './connection';
 import { redisTopicManager } from './topicManager';
+import { config } from '../config';
+import { graphqlPubSub, channelForTopic } from '../graphql/pubsub';
 
 export class EventDistributor {
   private redis: RedisClientType;
   private subscriber: RedisClientType;
   private isListening = false;
+  private roundRobinIndexByTopic: Map<string, number> = new Map();
 
   constructor() {
     this.redis = redisConnection.getClient()!;
@@ -21,12 +24,14 @@ export class EventDistributor {
       await this.subscriber.connect();
       
       // Subscribe to all topic events
-      await this.subscriber.pSubscribe('topic:*:events', async (message, channel) => {
+      await this.subscriber.pSubscribe(`${config.redis.keyPrefix}:pub:*:*`, async (message, channel) => {
         try {
           const event: Event = JSON.parse(message);
-          const topicId = channel.replace('topic:', '').replace(':events', '');
-          
-          await this.distributeEventToSubscribers(topicId, event);
+          const remainder = channel.replace(`${config.redis.keyPrefix}:pub:`, '');
+          const sepIdx = remainder.indexOf(':');
+          const tenantId = sepIdx >= 0 ? remainder.substring(0, sepIdx) : 'default';
+          const topicId = sepIdx >= 0 ? remainder.substring(sepIdx + 1) : remainder;
+          await this.distributeEventToSubscribers(tenantId, topicId, event);
         } catch (error) {
           logger.error('Error processing event from Redis Pub/Sub:', error);
         }
@@ -44,7 +49,7 @@ export class EventDistributor {
     if (!this.isListening) return;
 
     try {
-      await this.subscriber.pUnsubscribe('topic:*:events');
+      await this.subscriber.pUnsubscribe(`${config.redis.keyPrefix}:pub:*:*`);
       await this.subscriber.disconnect();
       this.isListening = false;
       logger.info('Event distributor stopped listening');
@@ -53,20 +58,27 @@ export class EventDistributor {
     }
   }
 
-  private async distributeEventToSubscribers(topicId: string, event: Event): Promise<void> {
+  private async distributeEventToSubscribers(tenantId: string, topicId: string, event: Event): Promise<void> {
     try {
       // Get all subscribers for this topic
-      const subscriberIds = await this.redis.sMembers(`topic:${topicId}:subscribers`);
+      const subscriberIds = await this.redis.sMembers(`${config.redis.keyPrefix}:topic:${tenantId}:${topicId}:subscribers`);
       
       if (subscriberIds.length === 0) {
         logger.debug(`No subscribers for topic ${topicId}`);
         return;
       }
 
-      // Distribute event to all subscribers asynchronously
-      const distributionPromises = subscriberIds.map(async (subscriberId: string) => {
+      // Fairness: rotate start index per topic (coarse DRR approximation)
+      const rrKey = `${tenantId}:${topicId}`;
+      const start = this.roundRobinIndexByTopic.get(rrKey) ?? 0;
+      const rotated = subscriberIds.slice(start).concat(subscriberIds.slice(0, start));
+      const next = (start + 1) % subscriberIds.length;
+      this.roundRobinIndexByTopic.set(rrKey, next);
+
+      // Distribute event to all subscribers asynchronously in rotated order
+      const distributionPromises = rotated.map(async (subscriberId: string) => {
         try {
-          await redisTopicManager.addEventToSubscriberQueue(topicId, subscriberId, event);
+          await redisTopicManager.addEventToSubscriberQueue(tenantId, topicId, subscriberId, event);
         } catch (error) {
           logger.error(`Failed to distribute event to subscriber ${subscriberId}:`, error);
           // Mark subscriber as inactive if there's an error
@@ -75,6 +87,14 @@ export class EventDistributor {
       });
 
       await Promise.allSettled(distributionPromises);
+      // Emit to GraphQL PubSub channel scoped by tenant and topic
+      try {
+        await graphqlPubSub.publish(channelForTopic(event.tenantId, topicId), {
+          topicEvents: event,
+        });
+      } catch (err) {
+        logger.error('GraphQL PubSub publish failed:', err);
+      }
       logger.debug(`Distributed event ${event.id} to ${subscriberIds.length} subscribers in topic ${topicId}`);
     } catch (error) {
       logger.error(`Error distributing event to subscribers for topic ${topicId}:`, error);

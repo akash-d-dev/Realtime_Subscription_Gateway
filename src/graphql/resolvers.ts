@@ -1,19 +1,23 @@
-import { Event, PublishEventInput } from '../types';
+import { EventEnvelope as Event, PublishEventInput } from '../types';
 import { redisTopicManager } from '../redis/topicManager';
 import { eventDistributor } from '../redis/eventDistributor';
 import { rateLimiter } from '../redis/rateLimiter';
 import { firebaseAuth } from '../gateway/auth';
 import { logger } from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
-import { PubSub } from 'graphql-subscriptions';
+import { graphqlPubSub, channelForTopic } from './pubsub';
+// import { config } from '../config';
+import { validatePublishInput } from '../utils/envelope';
+import { metricsCollector } from '../monitoring/metrics';
+import { presenceManager } from '../redis/presence';
+import { config } from '../config';
 
-// Create a PubSub instance for managing subscriptions
-const pubsub = new PubSub();
+// PubSub is provided via singleton in ./pubsub
 
 export const resolvers = {
   JSON: {
-    __serialize: (value: any) => value,
-    __parseValue: (value: any) => value,
+    __serialize: (value: unknown) => value as unknown,
+    __parseValue: (value: unknown) => value as unknown,
     __parseLiteral: (ast: any) => {
       // Handle GraphQL AST literal parsing
       if (ast.kind === 'ObjectValue') {
@@ -26,19 +30,23 @@ export const resolvers = {
       return ast.value;
     },
   },
+  EventEnvelope: {
+    // pass-through resolvers if needed later
+  },
   
   Query: {
-    topics: async (_: any, __: any, context: any): Promise<any> => {
+    topics: async (_: unknown, __: unknown): Promise<any> => {
       try {
         const topicIds = await redisTopicManager.getAllTopics();
         const topics = await Promise.all(
           topicIds.map(async (id) => {
-            const stats = await redisTopicManager.getTopicStats(id);
+            // For demo, assume single-tenant 'default' when aggregating topics
+            const stats = await redisTopicManager.getTopicStats('default', id);
             return {
               id,
               subscriberCount: stats?.subscriberCount || 0,
               bufferSize: stats?.bufferSize || 0,
-              createdAt: Date.now(), // TODO: Get actual creation time from Redis
+              createdAt: Date.now(),
             };
           })
         );
@@ -49,9 +57,10 @@ export const resolvers = {
       }
     },
 
-    topicStats: async (_: any, { topicId }: { topicId: string }, context: any): Promise<any> => {
+    topicStats: async (_: unknown, { topicId }: { topicId: string }, context: any): Promise<any> => {
       try {
-        const stats = await redisTopicManager.getTopicStats(topicId);
+        const tenantId = context?.user?.tenantId || 'default';
+        const stats = await redisTopicManager.getTopicStats(tenantId, topicId);
         if (!stats) {
           throw new Error('Topic not found');
         }
@@ -62,7 +71,7 @@ export const resolvers = {
       }
     },
 
-    eventHistory: async (_: any, { topicId, count }: { topicId: string; count?: number }, context: any): Promise<Event[]> => {
+    eventHistory: async (_: unknown, { topicId, count }: { topicId: string; count?: number }, context: any): Promise<Event[]> => {
       try {
         // Verify authentication
         if (!context.user) {
@@ -75,7 +84,8 @@ export const resolvers = {
           throw new Error('Access denied to topic');
         }
 
-        return await redisTopicManager.getEventHistory(topicId, count || 100);
+        const tenantId = context.user.tenantId || 'default';
+        return await redisTopicManager.getEventHistory(tenantId, topicId, count || 100);
       } catch (error) {
         logger.error('Error fetching event history:', error);
         throw new Error('Failed to fetch event history');
@@ -91,7 +101,13 @@ export const resolvers = {
           throw new Error('Authentication required');
         }
 
-        const { topicId, type, data } = input;
+        const { topicId, type, data, priority } = input;
+
+        // Validate envelope fields
+        const vr = validatePublishInput(input);
+        if (!vr.valid) {
+          throw new Error(vr.reason || 'Invalid event');
+        }
 
         // Check rate limits
         const userRateLimit = await rateLimiter.checkUserRateLimit(context.user.userId, 'publish');
@@ -99,7 +115,8 @@ export const resolvers = {
           throw new Error(`Rate limit exceeded. Try again in ${Math.ceil((userRateLimit.resetTime - Date.now()) / 1000)} seconds`);
         }
 
-        const topicRateLimit = await rateLimiter.checkTopicRateLimit(topicId);
+        const tenantForRl = context.user.tenantId || 'default';
+        const topicRateLimit = await rateLimiter.checkTopicRateLimit(tenantForRl, topicId);
         if (!topicRateLimit.allowed) {
           throw new Error(`Topic rate limit exceeded. Try again in ${Math.ceil((topicRateLimit.resetTime - Date.now()) / 1000)} seconds`);
         }
@@ -111,22 +128,28 @@ export const resolvers = {
         }
 
         // Create event
+        const now = new Date();
+        const tenantId = context.user.tenantId || 'default';
+        // Seq is assigned inside Redis manager for durability; for transient path we can use timestamp as fallback
         const event: Event = {
           id: uuidv4(),
           topicId,
           type,
           data,
-          timestamp: Date.now(),
-          userId: context.user.userId,
+          seq: Date.now(),
+          ts: now.toISOString(),
+          tenantId,
+          senderId: context.user.userId,
+          ...(typeof priority === 'number' ? { priority } : {}),
         };
 
         // Publish event using the event distributor
         await eventDistributor.publishEvent(topicId, event);
+        metricsCollector.onPublish();
 
-        // Publish to PubSub for immediate GraphQL subscription delivery
-        await pubsub.publish('TOPIC_EVENTS', {
-          topicEvents: event,
-        });
+        // Also emit to PubSub for same-node delivery
+        await graphqlPubSub.publish(channelForTopic(tenantId, topicId), { topicEvents: event });
+        metricsCollector.onDeliver();
 
         logger.info(`Published event ${event.id} to topic ${topicId}`);
 
@@ -144,11 +167,29 @@ export const resolvers = {
         };
       }
     },
+    joinTopic: async (_: any, { topicId }: { topicId: string }, context: any) => {
+      if (!context.user) throw new Error('Authentication required');
+      const tenantId = context.user.tenantId || 'default';
+      await presenceManager.join(tenantId, topicId, context.user.userId);
+      return { success: true, message: 'joined' };
+    },
+    leaveTopic: async (_: any, { topicId }: { topicId: string }, context: any) => {
+      if (!context.user) throw new Error('Authentication required');
+      const tenantId = context.user.tenantId || 'default';
+      await presenceManager.leave(tenantId, topicId, context.user.userId);
+      return { success: true, message: 'left' };
+    },
+    heartbeat: async (_: any, { topicId }: { topicId: string }, context: any) => {
+      if (!context.user) throw new Error('Authentication required');
+      const tenantId = context.user.tenantId || 'default';
+      await presenceManager.heartbeat(tenantId, topicId, context.user.userId);
+      return { success: true, message: 'ok' };
+    },
   },
 
   Subscription: {
     topicEvents: {
-      subscribe: async (_: any, { topicId }: { topicId: string }, context: any): Promise<any> => {
+      subscribe: async (_: unknown, { topicId, fromSeq }: { topicId: string; fromSeq?: number }, context: any): Promise<any> => {
         try {
           // Verify authentication
           if (!context.user) {
@@ -163,12 +204,21 @@ export const resolvers = {
 
           // Add subscriber to topic
           const subscriberId = context.connectionId || uuidv4();
-          await redisTopicManager.addSubscriber(topicId, subscriberId, context.user.userId);
+          await redisTopicManager.addSubscriber(context.user.tenantId || 'default', topicId, subscriberId, context.user.userId);
 
           logger.info(`Subscriber ${subscriberId} subscribed to topic ${topicId}`);
 
-          // Return async iterator for real-time events
-          return pubsub.asyncIterator(['TOPIC_EVENTS']);
+          // If fromSeq provided, emit backlog first (server-side push)
+          if (typeof fromSeq === 'number' && fromSeq > 0 && config.featureFlags.durabilityEnabled) {
+            const backlog = await redisTopicManager.readFromSeq(context.user.tenantId || 'default', topicId, fromSeq);
+            for (const evt of backlog) {
+              await graphqlPubSub.publish(channelForTopic(context.user.tenantId || 'default', topicId), { topicEvents: evt });
+            }
+          }
+
+          // Return async iterator for topic-scoped events
+          const tenantId = context.user.tenantId || 'default';
+          return graphqlPubSub.asyncIterator([channelForTopic(tenantId, topicId)]);
         } catch (error) {
           logger.error('Error subscribing to topic:', error);
           throw new Error('Failed to subscribe to topic');

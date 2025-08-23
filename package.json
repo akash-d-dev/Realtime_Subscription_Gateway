@@ -13,7 +13,9 @@
     "format": "prettier --write src/**/*.ts",
     "seed": "ts-node scripts/seedTopics.ts",
     "start:dev": "node scripts/start-dev.js",
-    "test:client": "node examples/test-client.js"
+    "test:client": "node examples/test-client.js",
+    "demo:pub": "node scripts/publisher.js",
+    "demo:sub": "node scripts/subscriber.js"
   },
   "keywords": [
     "realtime",

@@ -39,8 +39,10 @@ async function testWebSocketConnection() {
                 topicId
                 type
                 data
-                timestamp
-                userId
+                seq
+                ts
+                tenantId
+                senderId
               }
             }
           `,

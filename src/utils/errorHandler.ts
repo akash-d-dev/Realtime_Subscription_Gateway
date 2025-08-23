@@ -155,3 +155,26 @@ export class CircuitBreaker {
 // Global circuit breakers for different services
 export const redisCircuitBreaker = new CircuitBreaker(3, 30000);
 export const firebaseCircuitBreaker = new CircuitBreaker(5, 60000);
+
+export class SafeError extends Error {
+  public readonly code: string;
+  public readonly details?: Record<string, unknown>;
+
+  constructor(message: string, code = 'INTERNAL_ERROR', details?: Record<string, unknown>) {
+    super(message);
+    this.code = code;
+    if (details) {
+      this.details = details;
+    }
+  }
+}
+
+export function toSafeMessage(error: unknown, fallback = 'Internal server error'): { message: string; code: string } {
+  if (error instanceof SafeError) {
+    return { message: error.message, code: error.code };
+  }
+  if (error instanceof Error) {
+    return { message: error.message, code: 'ERROR' };
+  }
+  return { message: fallback, code: 'INTERNAL_ERROR' };
+}
