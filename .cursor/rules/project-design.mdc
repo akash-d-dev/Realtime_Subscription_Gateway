@@ -1,0 +1,141 @@
+---
+description: Whenever you need to know -  what is bieng build, check project road map, project goal
+alwaysApply: false
+---
+
+
+NOTE: THIS IS A FLEXIBLE PLAN DESIGNED TO GIVE A ROUGH/FIRST DRAFT PLAN FOR THIS PROJECT; Language - TypeScript
+
+🏗️ Project: Scalable Realtime Subscription Gateway
+🔥 Goal
+Build a backend system that:
+
+Accepts live event updates from producers (e.g., doc edits, presence updates)
+
+Delivers those updates in real-time to thousands of WebSocket subscribers
+
+Handles backpressure, slow clients, fan-out, durability, and rate limiting
+
+Uses Redis, GraphQL, and Firebase Auth to manage all this at scale
+
+🧠 Core Concepts You’ll Build
+Area	Component
+Ingress	Producers send events (via REST or GraphQL Mutation)
+Message Broker	Redis Pub/Sub (for low-latency fan-out), optionally Redis Streams
+Subscription Layer	GraphQL Subscriptions over WebSocket
+Fan-Out Logic	Per-topic ring buffers, subscriber queues, coalescing, slow detection
+Rate Limiting	Token buckets via Redis Lua
+Resync / Snapshots	Optional: Redis Streams + Firestore snapshot store
+Auth	Firebase Auth on connection, topic ACL checks
+Observability	Metrics for topic pressure, client lag, event drop rates
+
+🧱 Tech Stack
+Tool	Use
+Redis	Pub/Sub + optional Streams + token bucket rate limiting
+Apollo Server or Envelop	GraphQL API Gateway (subscriptions + mutations)
+graphql-ws	WebSocket protocol for real-time GraphQL
+Firebase Auth	Authentication (JWT validation)
+Firestore	Store topic metadata and optional snapshots
+TypeScript / Node.js	Clean typed backend with Cursor agent support
+
+🧰 Project Structure
+bash
+Copy
+Edit
+realtime-gateway/
+├── src/
+│   ├── index.ts             # Entry point
+│   ├── gateway/
+│   │   ├── subscriptionServer.ts  # GraphQL WS handlers
+│   │   ├── topicManager.ts        # Per-topic buffers, dispatch
+│   │   ├── subscriber.ts          # Subscriber queues & lifecycle
+│   │   └── auth.ts                # Firebase Auth + ACL checks
+│   ├── redis/
+│   │   ├── pubsub.ts        # Redis Pub/Sub handlers
+│   │   ├── streams.ts       # Optional durable stream ingestion
+│   │   ├── ratelimit.ts     # Lua token bucket logic
+│   ├── graphql/
+│   │   ├── schema.ts        # GraphQL schema definitions
+│   │   └── resolvers.ts     # publishEvent, etc.
+│   ├── utils/
+│   │   └── logger.ts        # Winston or pino-based logging
+│   └── config.ts            # Env config
+├── scripts/
+│   └── seedTopics.ts        # Local topic setup for dev
+├── docker-compose.yml       # Redis cluster, gateway service
+├── .env
+└── README.md
+🗺️ Feature Development Plan (Coding Agents Ready)
+✅ Phase 1: Basic Fan-Out MVP (0–2 weeks)
+Goal: get real-time updates from producers → subscribers
+
+ Create minimal GraphQL schema with:
+
+publishEvent(topicId, event)
+
+subscription topicEvents(topicId)
+
+ Firebase Auth JWT parsing & validation middleware
+
+ Redis Pub/Sub listener per topic
+
+ In-memory per-topic ring buffer (ArrayDeque or RingBuffer class)
+
+ Simple in-memory per-subscriber queues
+
+ Dispatch loop with fair delivery
+
+Bonus:
+
+ CLI client: ws://localhost:4000/graphql that prints events
+
+🚦 Phase 2: Backpressure + Slow Client Handling (3–4 weeks)
+ Detect full subscriber queues
+
+ Coalescing: only send last presence update if backlogged
+
+ Drop strategy: kick clients who fall too far behind
+
+ Topic snapshots (just JSON) for resync fallback
+
+🔒 Phase 3: Rate Limits + Security
+ Redis Lua script for token bucket (per topic/tenant)
+
+ Deny publishEvent if over limit
+
+ GraphQL auth rules: check topic-level ACL (user → Firestore)
+
+📈 Phase 4: Observability
+ Expose /metrics (Prometheus)
+
+topic buffer fill %
+
+subscriber lag
+
+event drops / kicks
+
+ Structured logs: event publish, dispatch, kick reasons
+
+🧱 Phase 5: Durable Streams & Replay (Optional)
+ On publishEvent, push to stream:topicId
+
+ On reconnect, allow fromSeq param
+
+ Replay from Redis Stream + skip to latest
+
+📚 Firebase Integration Plan
+Feature	Use
+Firebase Auth	Validate JWT from WebSocket handshake or mutation headers
+Firestore	Store topics/{topicId} metadata like access rules, snapshot pointers
+Firebase Admin SDK	Use for token verification + Firestore reads
+
+📦 MVP Deliverables
+✅ yarn dev spins up local gateway + Redis
+
+✅ publishEvent(topic, {type, data}) sends to all subscribers
+
+✅ Real-time WebSocket clients receive events
+
+✅ Firebase-authenticated connections
+
+✅ CLI to simulate producers and clients
