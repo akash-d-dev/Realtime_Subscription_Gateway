@@ -42,6 +42,7 @@ export const typeDefs = gql`
   type Query {
     topics: [Topic!]!
     topicStats(topicId: ID!): TopicStats
+    eventHistory(topicId: ID!, count: Int): [Event!]!
   }
 
   type Mutation {

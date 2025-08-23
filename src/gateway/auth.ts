@@ -56,9 +56,9 @@ class FirebaseAuth {
   }
 
   async checkTopicAccess(userId: string, topicId: string): Promise<boolean> {
-    // TODO: Implement topic-level ACL checks using Firestore
-    // For now, allow all authenticated users
-    return true;
+    // Import here to avoid circular dependencies
+    const { topicAccessControl } = await import('../firebase/topicAccess');
+    return await topicAccessControl.checkTopicAccess(userId, topicId);
   }
 }
 

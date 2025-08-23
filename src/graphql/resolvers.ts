@@ -1,8 +1,14 @@
 import { Event, PublishEventInput } from '../types';
-import { topicManager } from '../gateway/topicManager';
+import { redisTopicManager } from '../redis/topicManager';
+import { eventDistributor } from '../redis/eventDistributor';
+import { rateLimiter } from '../redis/rateLimiter';
 import { firebaseAuth } from '../gateway/auth';
 import { logger } from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
+import { PubSub } from 'graphql-subscriptions';
+
+// Create a PubSub instance for managing subscriptions
+const pubsub = new PubSub();
 
 export const resolvers = {
   JSON: {
@@ -24,16 +30,19 @@ export const resolvers = {
   Query: {
     topics: async (_: any, __: any, context: any): Promise<any> => {
       try {
-        const topicIds = topicManager.getAllTopics();
-        return topicIds.map(id => {
-          const stats = topicManager.getTopicStats(id);
-          return {
-            id,
-            subscriberCount: stats?.subscriberCount || 0,
-            bufferSize: stats?.bufferSize || 0,
-            createdAt: Date.now(), // TODO: Store actual creation time
-          };
-        });
+        const topicIds = await redisTopicManager.getAllTopics();
+        const topics = await Promise.all(
+          topicIds.map(async (id) => {
+            const stats = await redisTopicManager.getTopicStats(id);
+            return {
+              id,
+              subscriberCount: stats?.subscriberCount || 0,
+              bufferSize: stats?.bufferSize || 0,
+              createdAt: Date.now(), // TODO: Get actual creation time from Redis
+            };
+          })
+        );
+        return topics;
       } catch (error) {
         logger.error('Error fetching topics:', error);
         throw new Error('Failed to fetch topics');
@@ -42,7 +51,7 @@ export const resolvers = {
 
     topicStats: async (_: any, { topicId }: { topicId: string }, context: any): Promise<any> => {
       try {
-        const stats = topicManager.getTopicStats(topicId);
+        const stats = await redisTopicManager.getTopicStats(topicId);
         if (!stats) {
           throw new Error('Topic not found');
         }
@@ -50,6 +59,26 @@ export const resolvers = {
       } catch (error) {
         logger.error('Error fetching topic stats:', error);
         throw new Error('Failed to fetch topic stats');
+      }
+    },
+
+    eventHistory: async (_: any, { topicId, count }: { topicId: string; count?: number }, context: any): Promise<Event[]> => {
+      try {
+        // Verify authentication
+        if (!context.user) {
+          throw new Error('Authentication required');
+        }
+
+        // Check topic access
+        const hasAccess = await firebaseAuth.checkTopicAccess(context.user.userId, topicId);
+        if (!hasAccess) {
+          throw new Error('Access denied to topic');
+        }
+
+        return await redisTopicManager.getEventHistory(topicId, count || 100);
+      } catch (error) {
+        logger.error('Error fetching event history:', error);
+        throw new Error('Failed to fetch event history');
       }
     },
   },
@@ -63,6 +92,17 @@ export const resolvers = {
         }
 
         const { topicId, type, data } = input;
+
+        // Check rate limits
+        const userRateLimit = await rateLimiter.checkUserRateLimit(context.user.userId, 'publish');
+        if (!userRateLimit.allowed) {
+          throw new Error(`Rate limit exceeded. Try again in ${Math.ceil((userRateLimit.resetTime - Date.now()) / 1000)} seconds`);
+        }
+
+        const topicRateLimit = await rateLimiter.checkTopicRateLimit(topicId);
+        if (!topicRateLimit.allowed) {
+          throw new Error(`Topic rate limit exceeded. Try again in ${Math.ceil((topicRateLimit.resetTime - Date.now()) / 1000)} seconds`);
+        }
 
         // Check topic access
         const hasAccess = await firebaseAuth.checkTopicAccess(context.user.userId, topicId);
@@ -80,8 +120,13 @@ export const resolvers = {
           userId: context.user.userId,
         };
 
-        // Add event to topic
-        topicManager.addEvent(topicId, event);
+        // Publish event using the event distributor
+        await eventDistributor.publishEvent(topicId, event);
+
+        // Publish to PubSub for immediate GraphQL subscription delivery
+        await pubsub.publish('TOPIC_EVENTS', {
+          topicEvents: event,
+        });
 
         logger.info(`Published event ${event.id} to topic ${topicId}`);
 
@@ -118,12 +163,12 @@ export const resolvers = {
 
           // Add subscriber to topic
           const subscriberId = context.connectionId || uuidv4();
-          topicManager.addSubscriber(topicId, subscriberId, context.user.userId);
+          await redisTopicManager.addSubscriber(topicId, subscriberId, context.user.userId);
 
           logger.info(`Subscriber ${subscriberId} subscribed to topic ${topicId}`);
 
-          // Return async iterator for events
-          return topicManager.getSubscriberEvents(topicId, subscriberId);
+          // Return async iterator for real-time events
+          return pubsub.asyncIterator(['TOPIC_EVENTS']);
         } catch (error) {
           logger.error('Error subscribing to topic:', error);
           throw new Error('Failed to subscribe to topic');

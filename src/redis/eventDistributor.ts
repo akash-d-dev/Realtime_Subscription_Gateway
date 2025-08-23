@@ -1,0 +1,98 @@
+import { RedisClientType } from 'redis';
+import { Event } from '../types';
+import { logger } from '../utils/logger';
+import { redisConnection } from './connection';
+import { redisTopicManager } from './topicManager';
+
+export class EventDistributor {
+  private redis: RedisClientType;
+  private subscriber: RedisClientType;
+  private isListening = false;
+
+  constructor() {
+    this.redis = redisConnection.getClient()!;
+    this.subscriber = this.redis.duplicate();
+  }
+
+  async startListening(): Promise<void> {
+    if (this.isListening) return;
+
+    try {
+      await this.subscriber.connect();
+      
+      // Subscribe to all topic events
+      await this.subscriber.pSubscribe('topic:*:events', async (message, channel) => {
+        try {
+          const event: Event = JSON.parse(message);
+          const topicId = channel.replace('topic:', '').replace(':events', '');
+          
+          await this.distributeEventToSubscribers(topicId, event);
+        } catch (error) {
+          logger.error('Error processing event from Redis Pub/Sub:', error);
+        }
+      });
+
+      this.isListening = true;
+      logger.info('Event distributor started listening for Redis Pub/Sub events');
+    } catch (error) {
+      logger.error('Failed to start event distributor:', error);
+      throw error;
+    }
+  }
+
+  async stopListening(): Promise<void> {
+    if (!this.isListening) return;
+
+    try {
+      await this.subscriber.pUnsubscribe('topic:*:events');
+      await this.subscriber.disconnect();
+      this.isListening = false;
+      logger.info('Event distributor stopped listening');
+    } catch (error) {
+      logger.error('Error stopping event distributor:', error);
+    }
+  }
+
+  private async distributeEventToSubscribers(topicId: string, event: Event): Promise<void> {
+    try {
+      // Get all subscribers for this topic
+      const subscriberIds = await this.redis.sMembers(`topic:${topicId}:subscribers`);
+      
+      if (subscriberIds.length === 0) {
+        logger.debug(`No subscribers for topic ${topicId}`);
+        return;
+      }
+
+      // Distribute event to all subscribers asynchronously
+      const distributionPromises = subscriberIds.map(async (subscriberId: string) => {
+        try {
+          await redisTopicManager.addEventToSubscriberQueue(topicId, subscriberId, event);
+        } catch (error) {
+          logger.error(`Failed to distribute event to subscriber ${subscriberId}:`, error);
+          // Mark subscriber as inactive if there's an error
+          await redisTopicManager.markSubscriberInactive(topicId, subscriberId);
+        }
+      });
+
+      await Promise.allSettled(distributionPromises);
+      logger.debug(`Distributed event ${event.id} to ${subscriberIds.length} subscribers in topic ${topicId}`);
+    } catch (error) {
+      logger.error(`Error distributing event to subscribers for topic ${topicId}:`, error);
+    }
+  }
+
+  async publishEvent(topicId: string, event: Event): Promise<void> {
+    try {
+      // Add event to Redis Stream for persistence
+      await redisTopicManager.addEvent(topicId, event);
+      
+      // The event will be automatically distributed via Redis Pub/Sub
+      logger.info(`Published event ${event.id} to topic ${topicId}`);
+    } catch (error) {
+      logger.error(`Error publishing event to topic ${topicId}:`, error);
+      throw error;
+    }
+  }
+}
+
+export const eventDistributor = new EventDistributor();

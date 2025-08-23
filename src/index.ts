@@ -9,16 +9,22 @@ import { resolvers } from './graphql/resolvers';
 import { SubscriptionServer } from './gateway/subscriptionServer';
 import { firebaseAuth } from './gateway/auth';
 import { redisConnection } from './redis/connection';
-import { topicManager } from './gateway/topicManager';
+import { redisTopicManager } from './redis/topicManager';
+import { eventDistributor } from './redis/eventDistributor';
 import { logger } from './utils/logger';
 import { config } from './config';
 import { GraphQLError, GraphQLFormattedError } from 'graphql';
+import { getPrometheusMetrics } from './monitoring/metrics';
 
 async function startServer(): Promise<void> {
   try {
     // Initialize Redis connection
     await redisConnection.connect();
     logger.info('Redis connected successfully');
+
+    // Start event distributor
+    await eventDistributor.startListening();
+    logger.info('Event distributor started');
 
     // Initialize Firebase Auth
     logger.info('Firebase Auth initialized');
@@ -42,6 +48,12 @@ async function startServer(): Promise<void> {
         timestamp: new Date().toISOString(),
         redis: redisConnection.isClientConnected(),
       });
+    });
+
+    // Metrics endpoint (Prometheus format)
+    app.get('/metrics', (req, res) => {
+      res.set('Content-Type', 'text/plain');
+      res.send(getPrometheusMetrics());
     });
 
     // Apollo Server setup
@@ -78,8 +90,8 @@ async function startServer(): Promise<void> {
     const subscriptionServer = new SubscriptionServer(httpServer);
 
     // Cleanup interval for inactive subscribers
-    setInterval(() => {
-      topicManager.cleanupInactiveSubscribers();
+    setInterval(async () => {
+      await redisTopicManager.cleanupInactiveSubscribers();
     }, 30000); // Every 30 seconds
 
     // Start server
@@ -94,6 +106,7 @@ async function startServer(): Promise<void> {
     // Graceful shutdown
     process.on('SIGTERM', async () => {
       logger.info('SIGTERM received, shutting down gracefully');
+      await eventDistributor.stopListening();
       await redisConnection.disconnect();
       httpServer.close(() => {
         logger.info('Server closed');
@@ -103,6 +116,7 @@ async function startServer(): Promise<void> {
 
     process.on('SIGINT', async () => {
       logger.info('SIGINT received, shutting down gracefully');
+      await eventDistributor.stopListening();
       await redisConnection.disconnect();
       httpServer.close(() => {
         logger.info('Server closed');
