@@ -2,12 +2,12 @@ const WebSocket = require('ws');
 
 // Test WebSocket connection to the gateway
 async function testWebSocketConnection() {
-  console.log('🔌 Testing WebSocket connection...');
+  console.log('Testing WebSocket connection...');
   
   const ws = new WebSocket('ws://localhost:4000/graphql');
   
   ws.on('open', () => {
-    console.log('✅ WebSocket connected successfully');
+    console.log('WebSocket connected successfully');
     
     // Send a connection initialization message
     const initMessage = {
@@ -22,10 +22,10 @@ async function testWebSocketConnection() {
   
   ws.on('message', (data) => {
     const message = JSON.parse(data.toString());
-    console.log('📨 Received message:', message);
+    console.log('Received message:', message);
     
     if (message.type === 'connection_ack') {
-      console.log('✅ Connection acknowledged');
+      console.log('Connection acknowledged');
       
       // Subscribe to a topic
       const subscribeMessage = {
@@ -57,11 +57,11 @@ async function testWebSocketConnection() {
   });
   
   ws.on('error', (error) => {
-    console.error('❌ WebSocket error:', error);
+    console.error('WebSocket error:', error);
   });
   
   ws.on('close', () => {
-    console.log('🔌 WebSocket connection closed');
+    console.log('WebSocket connection closed');
   });
   
   // Close connection after 10 seconds
@@ -73,20 +73,20 @@ async function testWebSocketConnection() {
 
 // Test HTTP health endpoint
 async function testHealthEndpoint() {
-  console.log('🏥 Testing health endpoint...');
+  console.log('Testing health endpoint...');
   
   try {
     const response = await fetch('http://localhost:4000/health');
     const data = await response.json();
-    console.log('✅ Health check response:', data);
+    console.log('Health check response:', data);
   } catch (error) {
-    console.error('❌ Health check failed:', error.message);
+    console.error('Health check failed:', error.message);
   }
 }
 
 // Run tests
 async function runTests() {
-  console.log('🧪 Starting gateway tests...\n');
+  console.log('Starting gateway tests...\n');
   
   await testHealthEndpoint();
   console.log('');
@@ -96,8 +96,8 @@ async function runTests() {
 
 // Check if fetch is available (Node 18+)
 if (typeof fetch === 'undefined') {
-  console.log('⚠️  Fetch not available, skipping HTTP tests');
-  console.log('💡 Use Node.js 18+ or install node-fetch for HTTP tests');
+  console.log('Fetch not available, skipping HTTP tests');
+  console.log('Use Node.js 18+ or install node-fetch for HTTP tests');
   testWebSocketConnection();
 } else {
   runTests();
