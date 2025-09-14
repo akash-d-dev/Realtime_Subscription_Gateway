@@ -7,20 +7,23 @@ import { config } from '../config';
 import { graphqlPubSub, channelForTopic } from '../graphql/pubsub';
 
 export class EventDistributor {
-  private redis: RedisClientType;
-  private subscriber: RedisClientType;
+  private redis: RedisClientType | null = null;
+  private subscriber: RedisClientType | null = null;
   private isListening = false;
   private roundRobinIndexByTopic: Map<string, number> = new Map();
 
   constructor() {
-    this.redis = redisConnection.getClient()!;
-    this.subscriber = this.redis.duplicate();
+    // Redis client will be initialized in startListening()
   }
 
   async startListening(): Promise<void> {
     if (this.isListening) return;
 
     try {
+      // Initialize Redis clients
+      this.redis = redisConnection.getClient()!;
+      this.subscriber = this.redis.duplicate();
+      
       await this.subscriber.connect();
       
       // Subscribe to all topic events
@@ -46,7 +49,7 @@ export class EventDistributor {
   }
 
   async stopListening(): Promise<void> {
-    if (!this.isListening) return;
+    if (!this.isListening || !this.subscriber) return;
 
     try {
       await this.subscriber.pUnsubscribe(`${config.redis.keyPrefix}:pub:*:*`);
@@ -59,6 +62,11 @@ export class EventDistributor {
   }
 
   private async distributeEventToSubscribers(tenantId: string, topicId: string, event: Event): Promise<void> {
+    if (!this.redis) {
+      logger.error('Redis client not initialized');
+      return;
+    }
+
     try {
       // Get all subscribers for this topic
       const subscriberIds = await this.redis.sMembers(`${config.redis.keyPrefix}:topic:${tenantId}:${topicId}:subscribers`);

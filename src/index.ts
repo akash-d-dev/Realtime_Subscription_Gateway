@@ -60,6 +60,7 @@ async function startServer(): Promise<void> {
     const apolloServer = new ApolloServer({
       typeDefs,
       resolvers,
+      introspection: true,
       context: async ({ req }) => {
         // Extract token from Authorization header
         const authHeader = req.headers.authorization;

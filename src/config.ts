@@ -34,6 +34,7 @@ export interface Config {
   };
   featureFlags: {
     durabilityEnabled: boolean;
+    firebaseAuthDisabled: boolean;
   };
   limits: {
     maxPayloadBytes: number;
@@ -71,6 +72,7 @@ export const config: Config = {
   },
   featureFlags: {
     durabilityEnabled: (process.env.DURABILITY_ENABLED || 'false').toLowerCase() === 'true',
+    firebaseAuthDisabled: (process.env.FIREBASE_AUTH_DISABLED || 'false').toLowerCase() === 'true',
   },
   limits: {
     maxPayloadBytes: parseInt(process.env.MAX_PAYLOAD_BYTES || '65536', 10), // 64KB default
