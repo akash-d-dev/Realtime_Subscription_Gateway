@@ -32,12 +32,54 @@ async function startServer(): Promise<void> {
     const app = express();
     const httpServer = createServer(app);
 
+    // Secure CORS configuration
+    const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map(origin => origin.trim()) || [];
+
+    // Default to secure origins in production
+    if (config.server.nodeEnv === 'production' && allowedOrigins.length === 0) {
+      logger.error('SECURITY ERROR: No ALLOWED_ORIGINS configured in production environment');
+      throw new Error('ALLOWED_ORIGINS must be configured in production');
+    }
+
+    // Allow localhost in development/test environments
+    const developmentOrigins = ['http://localhost:3000', 'http://localhost:4000', 'http://127.0.0.1:3000', 'http://127.0.0.1:4000'];
+    const finalOrigins = config.server.nodeEnv === 'production'
+      ? allowedOrigins
+      : [...allowedOrigins, ...developmentOrigins];
+
     // Middleware
-    app.use(helmet());
+    app.use(helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // GraphQL Playground needs these
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'", "ws:", "wss:"],
+        },
+      },
+    }));
     app.use(compression());
     app.use(cors({
-      origin: true,
+      origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin && config.server.nodeEnv !== 'production') {
+          return callback(null, true);
+        }
+
+        // Check if origin is in allowed list
+        if (origin && finalOrigins.includes(origin)) {
+          return callback(null, true);
+        }
+
+        // Log security violation
+        logger.warn(`CORS blocked request from origin: ${origin || 'unknown'}`);
+        callback(new Error(`CORS policy: Origin ${origin || 'unknown'} is not allowed`));
+      },
       credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'Apollo-Require-Preflight'],
+      maxAge: 86400, // 24 hours
     }));
     app.use(express.json({ limit: '10mb' }));
 
@@ -73,8 +115,30 @@ async function startServer(): Promise<void> {
         
         return { user };
       },
-      formatError: (error:GraphQLError ):GraphQLFormattedError => {
+      formatError: (error: GraphQLError): GraphQLFormattedError => {
         logger.error('GraphQL Error:', error);
+
+        // In production, sanitize error messages to prevent information disclosure
+        if (config.server.nodeEnv === 'production') {
+          // Check if it's a user-facing error (starts with our known prefixes)
+          const isUserError = error.message.startsWith('Authentication required') ||
+                             error.message.startsWith('Access denied') ||
+                             error.message.startsWith('Invalid input') ||
+                             error.message.startsWith('Invalid topic ID') ||
+                             error.message.startsWith('Invalid parameters') ||
+                             error.message.startsWith('Rate limit exceeded') ||
+                             error.message.includes('CORS policy');
+
+          return {
+            message: isUserError ? error.message : 'An internal error occurred',
+            // Remove sensitive information in production
+            locations: undefined,
+            path: undefined,
+            extensions: undefined,
+          };
+        }
+
+        // In development, return full error details
         return {
           message: error.message,
           locations: error.locations || [],

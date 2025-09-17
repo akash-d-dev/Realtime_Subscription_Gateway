@@ -14,6 +14,9 @@ export class RateLimiter {
   private redis: RedisClientType;
   private readonly rateLimitScript: string;
 
+  // In-memory fallback for when Redis is unavailable
+  private fallbackLimits: Map<string, { requests: number[]; resetTime: number }> = new Map();
+
   constructor() {
     this.redis = redisConnection.getClient()!;
     
@@ -83,14 +86,73 @@ export class RateLimiter {
         limit: parseInt(result[3] || '0'),
       };
     } catch (error) {
-      logger.error(`Rate limit check failed for key ${key}:`, error);
-      // Allow request if rate limiting fails
-      return {
-        allowed: true,
-        remaining: limit - 1,
-        resetTime: Date.now() + windowMs,
-        limit,
-      };
+      logger.error(`Rate limit check failed for key ${key}, falling back to in-memory limiter:`, error);
+
+      // Fail-closed: Use in-memory rate limiter as fallback
+      return this.fallbackRateLimit(key, limit, windowMs);
+    }
+  }
+
+  /**
+   * In-memory fallback rate limiter for when Redis is unavailable
+   * More restrictive than Redis version for security
+   */
+  private fallbackRateLimit(key: string, limit: number, windowMs: number): RateLimitResult {
+    const now = Date.now();
+    const windowStart = now - windowMs;
+
+    // Get or create rate limit entry
+    let entry = this.fallbackLimits.get(key);
+    if (!entry) {
+      entry = { requests: [], resetTime: now + windowMs };
+      this.fallbackLimits.set(key, entry);
+    }
+
+    // Clean up old requests outside the window
+    entry.requests = entry.requests.filter(timestamp => timestamp > windowStart);
+
+    // Apply more restrictive limits in fallback mode for security
+    const fallbackLimit = Math.floor(limit * 0.1); // 10% of normal limit
+    const isAllowed = entry.requests.length < fallbackLimit;
+
+    if (isAllowed) {
+      entry.requests.push(now);
+    }
+
+    // Update reset time
+    if (entry.requests.length > 0) {
+      entry.resetTime = Math.max(entry.resetTime, now + windowMs);
+    }
+
+    // Clean up old entries periodically
+    this.cleanupFallbackLimits();
+
+    logger.warn(`Using fallback rate limiter for key ${key}: ${entry.requests.length}/${fallbackLimit} requests`);
+
+    return {
+      allowed: isAllowed,
+      remaining: Math.max(0, fallbackLimit - entry.requests.length),
+      resetTime: entry.resetTime,
+      limit: fallbackLimit,
+    };
+  }
+
+  /**
+   * Clean up expired fallback rate limit entries
+   */
+  private cleanupFallbackLimits(): void {
+    const now = Date.now();
+    const expiredKeys: string[] = [];
+
+    for (const [key, entry] of this.fallbackLimits.entries()) {
+      // Remove entries older than 5 minutes
+      if (entry.resetTime < now - 300000) {
+        expiredKeys.push(key);
+      }
+    }
+
+    for (const key of expiredKeys) {
+      this.fallbackLimits.delete(key);
     }
   }
 

@@ -11,9 +11,17 @@ class FirebaseAuth {
 
   constructor() {
     this.isDisabled = config.featureFlags.firebaseAuthDisabled;
-    
+
+    // Critical security check: prevent auth bypass in production
+    if (this.isDisabled && config.server.nodeEnv === 'production') {
+      throw new Error(
+        'SECURITY ERROR: Firebase Auth cannot be disabled in production environment. ' +
+        'Set FIREBASE_AUTH_DISABLED=false or remove the environment variable entirely.'
+      );
+    }
+
     if (this.isDisabled) {
-      logger.warn('Firebase Auth is DISABLED - using development mode');
+      logger.warn('Firebase Auth is DISABLED - using development mode (NOT SAFE FOR PRODUCTION)');
       return;
     }
 
@@ -51,12 +59,14 @@ class FirebaseAuth {
 
   async verifyToken(token: string): Promise<AuthContext | null> {
     if (this.isDisabled) {
-      // Return a development user context
+      logger.warn('SECURITY WARNING: Using development authentication mode - all requests bypass authentication');
+      // Return a development user context with environment-based ID
+      const devUserId = `dev-user-${config.server.nodeEnv}-${Date.now().toString().slice(-6)}`;
       return {
-        userId: 'dev-user-123',
-        email: 'dev@example.com',
+        userId: devUserId,
+        email: 'development@localhost.dev',
         permissions: ['read', 'write'],
-        tenantId: 'default',
+        tenantId: config.server.nodeEnv === 'test' ? 'test-tenant' : 'default',
       };
     }
 
@@ -82,12 +92,14 @@ class FirebaseAuth {
 
   async verifySessionCookie(sessionCookie: string): Promise<AuthContext | null> {
     if (this.isDisabled) {
-      // Return a development user context
+      logger.warn('SECURITY WARNING: Using development authentication mode - session cookie verification bypassed');
+      // Return a development user context with environment-based ID
+      const devUserId = `dev-user-${config.server.nodeEnv}-${Date.now().toString().slice(-6)}`;
       return {
-        userId: 'dev-user-123',
-        email: 'dev@example.com',
+        userId: devUserId,
+        email: 'development@localhost.dev',
         permissions: ['read', 'write'],
-        tenantId: 'default',
+        tenantId: config.server.nodeEnv === 'test' ? 'test-tenant' : 'default',
       };
     }
 
@@ -113,6 +125,7 @@ class FirebaseAuth {
 
   async checkTopicAccess(userId: string, topicId: string): Promise<boolean> {
     if (this.isDisabled) {
+      logger.warn(`SECURITY WARNING: Topic access control bypassed for user ${userId} on topic ${topicId} - development mode`);
       // In development mode, allow all topic access
       return true;
     }
