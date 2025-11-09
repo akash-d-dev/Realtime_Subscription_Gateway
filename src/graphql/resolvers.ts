@@ -6,11 +6,17 @@ import { firebaseAuth } from '../gateway/auth';
 import { logger } from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
 import { graphqlPubSub, channelForTopic } from './pubsub';
-// import { config } from '../config';
 import { validatePublishInput } from '../utils/envelope';
 import { metricsCollector } from '../monitoring/metrics';
 import { presenceManager } from '../redis/presence';
 import { config } from '../config';
+import {
+  validateAndSanitizePublishInput,
+  validateTopicId,
+  validateQueryParams,
+  validateGraphQLContext,
+  checkInputRateLimit
+} from '../utils/inputSanitizer';
 
 // PubSub is provided via singleton in ./pubsub
 
@@ -59,8 +65,15 @@ export const resolvers = {
 
     topicStats: async (_: unknown, { topicId }: { topicId: string }, context: any): Promise<any> => {
       try {
+        // Validate topic ID
+        const topicValidation = validateTopicId(topicId);
+        if (!topicValidation.isValid) {
+          throw new Error(`Invalid topic ID: ${topicValidation.errors.join(', ')}`);
+        }
+
+        const sanitizedTopicId = topicValidation.sanitizedData!;
         const tenantId = context?.user?.tenantId || 'default';
-        const stats = await redisTopicManager.getTopicStats(tenantId, topicId);
+        const stats = await redisTopicManager.getTopicStats(tenantId, sanitizedTopicId);
         if (!stats) {
           throw new Error('Topic not found');
         }
@@ -78,14 +91,33 @@ export const resolvers = {
           throw new Error('Authentication required');
         }
 
+        // Validate topic ID
+        const topicValidation = validateTopicId(topicId);
+        if (!topicValidation.isValid) {
+          throw new Error(`Invalid topic ID: ${topicValidation.errors.join(', ')}`);
+        }
+
+        // Validate query parameters
+        const queryParams: { count?: number } = {};
+        if (count !== undefined) {
+          queryParams.count = count;
+        }
+        const queryValidation = validateQueryParams(queryParams);
+        if (!queryValidation.isValid) {
+          throw new Error(`Invalid parameters: ${queryValidation.errors.join(', ')}`);
+        }
+
+        const sanitizedTopicId = topicValidation.sanitizedData!;
+        const sanitizedCount = queryValidation.sanitizedData!.count || 100;
+
         // Check topic access
-        const hasAccess = await firebaseAuth.checkTopicAccess(context.user.userId, topicId);
+        const hasAccess = await firebaseAuth.checkTopicAccess(context.user.userId, sanitizedTopicId);
         if (!hasAccess) {
           throw new Error('Access denied to topic');
         }
 
         const tenantId = context.user.tenantId || 'default';
-        return await redisTopicManager.getEventHistory(tenantId, topicId, count || 100);
+        return await redisTopicManager.getEventHistory(tenantId, sanitizedTopicId, sanitizedCount);
       } catch (error) {
         logger.error('Error fetching event history:', error);
         throw new Error('Failed to fetch event history');
@@ -101,10 +133,31 @@ export const resolvers = {
           throw new Error('Authentication required');
         }
 
-        const { topicId, type, data, priority } = input;
+        // Validate and sanitize context
+        const contextValidation = validateGraphQLContext(context);
+        if (!contextValidation.isValid) {
+          logger.warn('Invalid GraphQL context:', contextValidation.errors);
+          throw new Error('Invalid request context');
+        }
 
-        // Validate envelope fields
-        const vr = validatePublishInput(input);
+        // Check input rate limiting (per user)
+        const rateLimitKey = `input-${context.user.userId}`;
+        if (!checkInputRateLimit(rateLimitKey, 60000, 50)) { // 50 requests per minute
+          throw new Error('Input rate limit exceeded. Please slow down.');
+        }
+
+        // Validate and sanitize input
+        const inputValidation = validateAndSanitizePublishInput(input);
+        if (!inputValidation.isValid) {
+          logger.warn('Invalid publish input:', inputValidation.errors);
+          throw new Error(`Invalid input: ${inputValidation.errors.join(', ')}`);
+        }
+
+        const sanitizedInput = inputValidation.sanitizedData!;
+        const { topicId, type, data, priority } = sanitizedInput;
+
+        // Legacy validation for backward compatibility
+        const vr = validatePublishInput(sanitizedInput);
         if (!vr.valid) {
           throw new Error(vr.reason || 'Invalid event');
         }
@@ -169,20 +222,44 @@ export const resolvers = {
     },
     joinTopic: async (_: any, { topicId }: { topicId: string }, context: any) => {
       if (!context.user) throw new Error('Authentication required');
+
+      // Validate topic ID
+      const topicValidation = validateTopicId(topicId);
+      if (!topicValidation.isValid) {
+        throw new Error(`Invalid topic ID: ${topicValidation.errors.join(', ')}`);
+      }
+
+      const sanitizedTopicId = topicValidation.sanitizedData!;
       const tenantId = context.user.tenantId || 'default';
-      await presenceManager.join(tenantId, topicId, context.user.userId);
+      await presenceManager.join(tenantId, sanitizedTopicId, context.user.userId);
       return { success: true, message: 'joined' };
     },
     leaveTopic: async (_: any, { topicId }: { topicId: string }, context: any) => {
       if (!context.user) throw new Error('Authentication required');
+
+      // Validate topic ID
+      const topicValidation = validateTopicId(topicId);
+      if (!topicValidation.isValid) {
+        throw new Error(`Invalid topic ID: ${topicValidation.errors.join(', ')}`);
+      }
+
+      const sanitizedTopicId = topicValidation.sanitizedData!;
       const tenantId = context.user.tenantId || 'default';
-      await presenceManager.leave(tenantId, topicId, context.user.userId);
+      await presenceManager.leave(tenantId, sanitizedTopicId, context.user.userId);
       return { success: true, message: 'left' };
     },
     heartbeat: async (_: any, { topicId }: { topicId: string }, context: any) => {
       if (!context.user) throw new Error('Authentication required');
+
+      // Validate topic ID
+      const topicValidation = validateTopicId(topicId);
+      if (!topicValidation.isValid) {
+        throw new Error(`Invalid topic ID: ${topicValidation.errors.join(', ')}`);
+      }
+
+      const sanitizedTopicId = topicValidation.sanitizedData!;
       const tenantId = context.user.tenantId || 'default';
-      await presenceManager.heartbeat(tenantId, topicId, context.user.userId);
+      await presenceManager.heartbeat(tenantId, sanitizedTopicId, context.user.userId);
       return { success: true, message: 'ok' };
     },
   },
@@ -196,29 +273,48 @@ export const resolvers = {
             throw new Error('Authentication required');
           }
 
+          // Validate topic ID
+          const topicValidation = validateTopicId(topicId);
+          if (!topicValidation.isValid) {
+            throw new Error(`Invalid topic ID: ${topicValidation.errors.join(', ')}`);
+          }
+
+          // Validate query parameters
+          const queryParams: { fromSeq?: number } = {};
+          if (fromSeq !== undefined) {
+            queryParams.fromSeq = fromSeq;
+          }
+          const queryValidation = validateQueryParams(queryParams);
+          if (!queryValidation.isValid) {
+            throw new Error(`Invalid parameters: ${queryValidation.errors.join(', ')}`);
+          }
+
+          const sanitizedTopicId = topicValidation.sanitizedData!;
+          const sanitizedFromSeq = queryValidation.sanitizedData!.fromSeq;
+
           // Check topic access
-          const hasAccess = await firebaseAuth.checkTopicAccess(context.user.userId, topicId);
+          const hasAccess = await firebaseAuth.checkTopicAccess(context.user.userId, sanitizedTopicId);
           if (!hasAccess) {
             throw new Error('Access denied to topic');
           }
 
           // Add subscriber to topic
           const subscriberId = context.connectionId || uuidv4();
-          await redisTopicManager.addSubscriber(context.user.tenantId || 'default', topicId, subscriberId, context.user.userId);
+          await redisTopicManager.addSubscriber(context.user.tenantId || 'default', sanitizedTopicId, subscriberId, context.user.userId);
 
-          logger.info(`Subscriber ${subscriberId} subscribed to topic ${topicId}`);
+          logger.info(`Subscriber ${subscriberId} subscribed to topic ${sanitizedTopicId}`);
 
           // If fromSeq provided, emit backlog first (server-side push)
-          if (typeof fromSeq === 'number' && fromSeq > 0 && config.featureFlags.durabilityEnabled) {
-            const backlog = await redisTopicManager.readFromSeq(context.user.tenantId || 'default', topicId, fromSeq);
+          if (typeof sanitizedFromSeq === 'number' && sanitizedFromSeq > 0 && config.featureFlags.durabilityEnabled) {
+            const backlog = await redisTopicManager.readFromSeq(context.user.tenantId || 'default', sanitizedTopicId, sanitizedFromSeq);
             for (const evt of backlog) {
-              await graphqlPubSub.publish(channelForTopic(context.user.tenantId || 'default', topicId), { topicEvents: evt });
+              await graphqlPubSub.publish(channelForTopic(context.user.tenantId || 'default', sanitizedTopicId), { topicEvents: evt });
             }
           }
 
           // Return async iterator for topic-scoped events
           const tenantId = context.user.tenantId || 'default';
-          return graphqlPubSub.asyncIterator([channelForTopic(tenantId, topicId)]);
+          return graphqlPubSub.asyncIterator([channelForTopic(tenantId, sanitizedTopicId)]);
         } catch (error) {
           logger.error('Error subscribing to topic:', error);
           throw new Error('Failed to subscribe to topic');
