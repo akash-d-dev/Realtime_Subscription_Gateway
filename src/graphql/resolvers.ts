@@ -98,7 +98,11 @@ export const resolvers = {
         }
 
         // Validate query parameters
-        const queryValidation = validateQueryParams({ count });
+        const queryParams: { count?: number } = {};
+        if (count !== undefined) {
+          queryParams.count = count;
+        }
+        const queryValidation = validateQueryParams(queryParams);
         if (!queryValidation.isValid) {
           throw new Error(`Invalid parameters: ${queryValidation.errors.join(', ')}`);
         }
@@ -276,7 +280,11 @@ export const resolvers = {
           }
 
           // Validate query parameters
-          const queryValidation = validateQueryParams({ fromSeq });
+          const queryParams: { fromSeq?: number } = {};
+          if (fromSeq !== undefined) {
+            queryParams.fromSeq = fromSeq;
+          }
+          const queryValidation = validateQueryParams(queryParams);
           if (!queryValidation.isValid) {
             throw new Error(`Invalid parameters: ${queryValidation.errors.join(', ')}`);
           }

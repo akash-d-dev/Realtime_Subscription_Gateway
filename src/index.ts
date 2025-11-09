@@ -129,13 +129,11 @@ async function startServer(): Promise<void> {
                              error.message.startsWith('Rate limit exceeded') ||
                              error.message.includes('CORS policy');
 
-          return {
+          // Remove sensitive information in production
+          const formattedError: GraphQLFormattedError = {
             message: isUserError ? error.message : 'An internal error occurred',
-            // Remove sensitive information in production
-            locations: undefined,
-            path: undefined,
-            extensions: undefined,
           };
+          return formattedError;
         }
 
         // In development, return full error details
