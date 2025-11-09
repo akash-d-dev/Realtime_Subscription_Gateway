@@ -177,9 +177,8 @@ export class RedisTopicManager {
     };
   }
 
-  async markSubscriberInactive(topicId: string, subscriberId: string): Promise<void> {
-    // Not tenant-scoped here because called in error path without tenant; leave as-is or extend later
-    await this.getRedis().hSet(`${config.redis.keyPrefix}:subscriber:${subscriberId}:meta`, 'isActive', 'false');
+  async markSubscriberInactive(tenantId: string, topicId: string, subscriberId: string): Promise<void> {
+    await this.getRedis().hSet(`${config.redis.keyPrefix}:subscriber:${tenantId}:${subscriberId}:meta`, 'isActive', 'false');
     logger.debug(`Marked subscriber ${subscriberId} as inactive`);
   }
 

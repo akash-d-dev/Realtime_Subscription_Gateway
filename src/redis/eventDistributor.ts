@@ -90,7 +90,7 @@ export class EventDistributor {
         } catch (error) {
           logger.error(`Failed to distribute event to subscriber ${subscriberId}:`, error);
           // Mark subscriber as inactive if there's an error
-          await redisTopicManager.markSubscriberInactive(topicId, subscriberId);
+          await redisTopicManager.markSubscriberInactive(tenantId, topicId, subscriberId);
         }
       });
 
