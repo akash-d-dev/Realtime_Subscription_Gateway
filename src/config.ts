@@ -41,13 +41,30 @@ export interface Config {
   };
 }
 
+function getRedisUrl(): string {
+  const url =
+    process.env.REDIS_URL ||
+    process.env.UPSTASH_REDIS_REST_URL ||
+    process.env.KV_URL ||
+    'redis://localhost:6379';
+
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    throw new Error(
+      '❌ Invalid Redis URL Protocol: The application requires a TCP Redis connection (rediss://), but an HTTP URL was provided.\n' +
+        'If you are using Upstash, please copy the "REDIS_URL" (starts with rediss://) from the dashboard, NOT the REST URL.'
+    );
+  }
+
+  return url;
+}
+
 export const config: Config = {
   server: {
     port: parseInt(process.env.PORT || '4000', 10),
     nodeEnv: process.env.NODE_ENV || 'development',
   },
   redis: {
-    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    url: getRedisUrl(),
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT || '6379', 10),
     password: process.env.REDIS_PASSWORD || '',
@@ -64,17 +81,25 @@ export const config: Config = {
   },
   topic: {
     maxBufferSize: parseInt(process.env.MAX_TOPIC_BUFFER_SIZE || '1000', 10),
-    maxSubscriberQueueSize: parseInt(process.env.MAX_SUBSCRIBER_QUEUE_SIZE || '100', 10),
-    slowClientThresholdMs: parseInt(process.env.SLOW_CLIENT_THRESHOLD_MS || '5000', 10),
+    maxSubscriberQueueSize: parseInt(
+      process.env.MAX_SUBSCRIBER_QUEUE_SIZE || '100',
+      10
+    ),
+    slowClientThresholdMs: parseInt(
+      process.env.SLOW_CLIENT_THRESHOLD_MS || '5000',
+      10
+    ),
   },
   logging: {
     level: process.env.LOG_LEVEL || 'info',
   },
   featureFlags: {
-    durabilityEnabled: (process.env.DURABILITY_ENABLED || 'false').toLowerCase() === 'true',
-    firebaseAuthDisabled: (process.env.FIREBASE_AUTH_DISABLED || 'false').toLowerCase() === 'true',
+    durabilityEnabled:
+      (process.env.DURABILITY_ENABLED || 'false').toLowerCase() === 'true',
+    firebaseAuthDisabled:
+      (process.env.FIREBASE_AUTH_DISABLED || 'false').toLowerCase() === 'true',
   },
   limits: {
     maxPayloadBytes: parseInt(process.env.MAX_PAYLOAD_BYTES || '65536', 10), // 64KB default
   },
-}; 
+};
